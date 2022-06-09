@@ -1,0 +1,486 @@
+---
+output: 
+  pdf_document:
+    keep_tex: false
+    fig_caption: true
+    latex_engine: pdflatex
+    template: svm-latex-ms.tex
+citation_package: natbib
+bibliography: master.bib
+nocite: '@*'
+graphics: yes
+header-includes:
+  -  \usepackage{hyperref}
+biblio-style: apsr
+title: "Statistical Considerations of Solar Flare Data: Fall 2020 Report"
+thanks:
+author:
+- name: Joshua D. Ingram
+  affiliation: New College of Florida
+abstract: "Solar flares are impulsive releases of energy that tend to occur in active regions located in the solar corona, occurring as a result of the reconnection of the sun’s magnetic field lines. The energies of flares appear to follow a power-law distribution, but due to sensitivity limitations of satellites at low energies, flares are not detectable at the left end of the distribution and the power-law turns over. Given this limitation, we utilize the maximum product of spacings (MPS) method to simultaneously estimate the power-law and the energy range over which it occurs in our observed data. We utilize the GOES database covering solar cycles 23 and 24 in our analysis, reporting the power-law exponent and bounds for the total energy, peak flux, and duration for the aggregate, by-cycle, and by-year subsamples. Additionally, we find that the distribution of flare counts throughout the cycles are overdispersed and do not abide by the Poisson distribution's assumptions, reporting that the Negative Binomial distribution seems to be a much better fit for the count data."
+keywords: 
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+geometry: margin=1in
+fontsize: 12pt
+spacing: double
+endnote: no
+---
+
+```{r setup, include = FALSE}
+# libraries
+library(png)
+library(tidyverse)
+library(VGAM)
+library(tm)
+library(hash)
+library(lubridate)
+library(knitr)
+library(fpp2)
+library(zoo)
+library(poweRlaw)
+library(gridExtra)
+
+# importing data 
+GOES <- read_csv("D:/main/Datasets/Solar_REU/GOES_data/goes_clean.csv")
+GOES$cycle <- as.factor(GOES$cycle)
+
+# Flare Count Data Wrangling
+
+# dataframes for counts by specified number of days
+GOES_days <- GOES %>% select(Gpeak) %>% mutate(seven_day = cut(Gpeak, "7 day"),
+                                        fourteen_day = cut(Gpeak, "14 day"),
+                                        thirty_day = cut(Gpeak, "30 day"),
+                                        year = format(Gpeak, format = "%Y"),
+                                        month = format(Gpeak, format = "%m"),
+                                        day = format(Gpeak, format = "%d"))
+
+GOES_seven <- GOES_days %>% group_by(year) %>% count(seven_day) %>% mutate(month = format(as.Date(seven_day), format = "%m"),
+                                                                           cycle = ifelse(year <= 2008, 23, 24),
+                                                                           difs = c(0,diff(n)))
+
+GOES_fourteen <- GOES_days %>% group_by(year) %>% count(fourteen_day) %>% mutate(month = format(as.Date(fourteen_day), format = "%m"),
+                                                                                 cycle = ifelse(year <= 2008, 23, 24),
+                                                                                 difs = c(0,diff(n)))
+
+GOES_thirty <- GOES_days %>% group_by(year) %>% count(thirty_day) %>% mutate(month = format(as.Date(thirty_day), format = "%m"),
+                                                                             cycle = ifelse(year <= 2008, 23, 24),
+                                                                             difs = c(0,diff(n)))
+
+# dataframes for counts by week, month
+GOES_seasons <- GOES %>% select(year, Gpeak) %>% group_by(year) %>% mutate(month = month(Gpeak),
+                                                                           week = week(Gpeak),
+                                                                           day = day(Gpeak))
+
+GOES_month <- GOES_seasons %>% count(month) %>% ungroup() %>% mutate(time_num = seq(7,281), 
+                                                                     difs = c(0,diff(n)), 
+                                                                     cycle = ifelse(year <= 2008, 23, 24))
+GOES_week <- GOES_seasons %>% count(week) %>% ungroup() %>% mutate(time_num = seq(31,1130), 
+                                                                   difs = c(0,diff(n)), 
+                                                                   cycle = ifelse(year <= 2008, 23, 24))
+
+GOES_counts <- GOES %>% mutate(yearmonth = as.Date(as.yearmon(format(Gpeak, format = "%Y-%m")))) %>% count(yearmonth)
+```
+
+# Introduction
+
+About every 11 years the sun completes a full *solar cycle* after its poles flip. This is a cycle of increasing and decreasing activity, with the most active phase of the cycle being known as the *solar maximum* and the least active known as the *solar minimum*. We typically characterize the phase of the cycle by the number of sunspots that occur, but this can also be accomplished by observing the number of solar flares occuring in the corona of the sun. *Figure 1* displays the solar cycle through a histogram of the frequency of solar flares observed by the GOES Satellites throughout solar cycles 23 and 24.
+
+These solar flares are bursts of light and radiation that occur in the sun's active regions as a result of the reconnection of the sun's magnetic field lines. They are high energy events observable at all wavelengths between radio and $\gamma$-ray on the electromagnetic spectrum, where each flare differs in their magnitudes of total energy release, peak flux, and duration. There is even a trend in the intensity of flares, classified by their peak flux, throughout the solar cycle (see *Figure 2*). The lowest classification of flares are known as A-class flares, with their peak flux being between $1e^{-5}$ and $1e^{-4}$ $ergs/s/cm^2$ at earth. The least common but most intense flares are defined as [X-class flares](https://youtu.be/W3NTxPCJjFU), with their peak flux being greater than $0.1$ $ergs/s/cm^2$ at earth. See *Table 1* for a list of flare classifications. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap = "Distribution of Flare Counts", fig.height = 8, fig.width = 10}
+dates <- c(as.Date("1996-07-30 00:00:01 UTC"), 
+           as.Date("2008-12-01 00:00:01 UTC"), 
+           as.Date("2001-11-15 00:00:01 UTC"), 
+           as.Date("2014-04-15 00:00:01 UTC"))
+extrema <- c("Minimum", "Minimum", "Maximum", "Maximum")
+solar_extrema <- data.frame(dates, extrema)
+
+ggplot(data = GOES, aes(x=Gtpeak, fill = cycle)) + 
+  geom_histogram(bins = 30) +
+  geom_histogram(color = "black") +
+  geom_vline(data = solar_extrema, mapping = aes(xintercept = decimal_date(dates), linetype = extrema), size = .85) +
+  labs(x = "Year", y = "Count") +
+  theme_bw(base_size = 15)
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap = "Distribution of Flare Counts by Class", fig.height = 8, fig.width = 10}
+ggplot(data = GOES, aes(x=Gtpeak, fill = cycle)) +
+  geom_histogram(bins = 50) +
+  geom_vline(data = solar_extrema, mapping = aes(xintercept = decimal_date(dates), linetype = extrema), size = .85) +
+  facet_wrap(~ class) +
+  scale_y_log10() +
+  labs(y = "Count", x = "Year") +
+  theme_bw(base_size = 15)
+
+```
+
+```{r, echo = FALSE}
+# defining variables, units
+variables <- c("A", "B", "C", "M", "X")
+definitions <- c("1e-5 to 1e-4 ergs/s/cm^2 at earth", "1e-4 to 1e-3 ergs/s/cm^2 at earth", "1e-3 to 0.01 ergs/s/cm^2 at earth", "0.01 to 0.1 ergs/s/cm^2 at earth", "> 0.1 ergs/s/cm^2 at earth")
+properties <- data.frame(variables, definitions)
+colnames(properties) <- c("Class", "Peak Flux Range")
+# table of variables
+kable(properties, caption = "Flare Classifications")
+```
+
+As seen in the two figures above, the total number of flares occuring increase as the solar maximum is approached. Additionally, the number of flares in each class differ, with B and C-class flares being the most common. The A, M, and X-class flares are the least common, with their frequencies increasing near the solar maximum. The reason for these differing frequencies by class can be explained by the distribution that flare properties follow, which is the power-law distribution. However, under a power-law distribution we would expect that the low energy A-class flares would be the most frequent flares in our observations, followed by B-class flares and so on. 
+
+This disparity in the number of low energy flares observed and the number of low energy flares expected is caused by sensitivity limitations of satellities at low energies. As the intensity of a flare decreases, it is harder to detect these flares because of the weakening contrast between the regular "background" emission of the corona and the emission of the flare. Thus, the lower the intensity of a flare, the less likely it is that we detect that flare. This also results in another detectability problem caused by the nature of the solar cycle. That is, as the number of high energy flares increase it is even less likely that we detect lower energy flares. This can be seen in *Figure 2* where there is an unexpected dip in the number B-class flares near the solar maximum, where high intensity flares are most common. 
+
+The nature of the solar cycle, the distribution of flare properties, and the limitations of satellites leads us to several important questions in solar physics that can be answered by utilizing statistical metholdologies. In the following sections, we discuss how flare counts are distributed throughout the solar cycle, present the Maximum Product of Spacings method to address the detectability problem, and estimate the power-law distribution of several solar flare properties.
+
+# Data
+
+## Observations
+
+The data utilized for our analysis was collected from the Geostationary Operational Environmental Satellites (GOES) [database](ftp.swpc.noaa.gov/pub/warehouse/). The GOES satellites are operated by NASA and the National Oceanic and Atmospheric Administration (NOAA), collecting data on the earth's atmosphere and on flares occuring on the sun. There are several versions of the GOES satellites, each equipped with a Solar X-Ray Imager (SXI), with seventeen of the satellites being active at some point after their launch. Our solar flare data has been collected by GOES-7 through GOES-16 satellites, with the earliest obervation occuring in July of 1996 and the latest occuring in December of 2019.
+
+Each observation in our data is an individual flare, with *Table 2* containing the definitions and units of the measured properties on each of the observed flares.
+
+```{r, echo = FALSE}
+# defining variables, units
+variables <- c("Gevtnum", "Garreg", "Gstart", "Gpeak", "Gstop", "Gduration", "Gflrtotalenergy", "Glfxpeak", "class")
+definitions <- c("flare event number", "AR region number, if known", "flare start time", "flare peak time", "flare stop time", "duration of the flare", "flare total energy at sun", "peak flux derived from GOES class at earth", "alphabetical GOES class assigned to flare peak")
+units <- c("", "", "YYYY-MM-DDTHH:MM:SS", "YYYY-MM-DDTHH:MM:SS", "YYYY-MM-DDTHH:MM:SS", "sec", "ergs", "ergs/s/cm^2", "")
+properties <- data.frame(variables, definitions, units)
+colnames(properties) <- c("Variable", "Definition", "Units")
+# table of variables
+kable(properties, caption = "Variable Definitions")
+```
+
+
+## Wrangling
+
+Before continuing on with our analysis, it was necessary to properly clean and prepare our data. We removed any observations containing NA for the selected variables seen in *Table 2*. If any observation had an unreasonable value due to a recording error, such as a negative duration value, we outright removed these observations from the dataset. Before any processing of the GOES data, there were 38,114 observed flares. After filtering out bad observations and missing data, the processed data had 33,445 observations. 
+
+We would expect that each observed flare would have its own unique energy value, but rounding and recording limitations cause a "discretization" in our observations. This results in a clustering of flares at specific energy values. See *Figure 3* below for a visualization of this problem when the number of bins is set to 1000.
+
+```{r, echo = FALSE, fig.cap = "Discreteness casused by rounding", fig.height = 8, fig.width = 8}
+ggplot(GOES, aes(x = log(Gflrtotalenergy))) + 
+  geom_histogram(bins = 1000) +
+  labs(x = "log(Total Energy)", y = "Count") +
+  theme_bw(base_size = 15) 
+```
+
+\pagebreak
+
+We found this had the potential to lead to less precise and biased estimates given by the maximum product of spacings algorithm. To address this, we jittered the filtered data before fitting our models to allow for more unique values. We accomplished this by uniformly distributing the observations over a small neighborhood of the discrete energy value. An example of the jittered distribution can be seen in *Figure 4*.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "Jittered distribution resolves discreteness", fig.height = 8, fig.width = 8}
+# smooth
+# input - 1D array of data (data)
+# output - "smoothed" version of 1D array x
+
+smooth_func <- function(data){
+  unique_vals <- unique(data)
+  new_data <- c()
+  
+  for (i in 1:length(unique_vals)){
+    if (i == 1){
+      count = length(data[which(data == unique_vals[i])])
+      if (count == 1){
+        new_data <- append(new_data, unique_vals[i])
+      } else {
+        right_val <- unique_vals[i+1]
+        val <- unique_vals[i]
+        left_val <- val - (right_val - val)
+        
+        left_lim <- (left_val + val) / 2
+        if (left_lim < 0){
+          left_lim <- 0
+        }
+        right_lim <- (right_val + val) / 2
+        uni_data <- runif(n = count, min = left_lim, max = right_lim)
+        new_data <- append(new_data, uni_data)
+      }
+    } else if (i == length(unique_vals)) {
+      count <- length(data[which(data == unique_vals[i])])
+      if (count == 1){
+        new_data <- append(new_data, unique_vals[i])
+      } else {
+        left_val <- unique_vals[i-1]
+        val <- unique_vals[i]
+        right_val <- val + (val - left_val)
+        
+        left_lim <- (left_val + val) / 2
+        if (left_lim < 0){
+          left_lim <- 0
+        }
+        right_lim <- (right_val + val) / 2
+        uni_data <- runif(n = count, min = left_lim, max = right_lim)
+        new_data <- append(new_data, uni_data)
+      }
+    } else {
+      count <- length(data[which(data == unique_vals[i])])
+      if (count == 1){
+        new_data <- append(new_data, unique_vals[i])
+      } else {
+        left_val <- unique_vals[i-1]
+        right_val <- unique_vals[i+1]
+        val <- unique_vals[i]
+        
+        left_lim <- (left_val + val) / 2
+        right_lim <- (right_val + val) / 2
+        uni_data <- runif(n = count, min = left_lim, max = right_lim)
+        new_data <- append(new_data, uni_data)
+      }
+    }
+  }
+  return(new_data)
+}
+
+smooth_log <- log(smooth_func(GOES$Gflrtotalenergy))
+smooth_data <- data.frame(smooth_log)
+colnames(smooth_data) <- c("smooth")
+ggplot(smooth_data, aes(x = smooth)) + 
+  geom_histogram(bins = 1000) +
+  labs(x = "log(Total Energy)", y = "Count") +
+  theme_bw(base_size = 15) 
+```
+
+\pagebreak
+
+# Power-Law Distribution
+
+The total energy release, peak flux, and duration of solar flares follow a power-law over a wide range of values. The power-law distribution is given by
+
+$$
+f(x) = \frac{\alpha - 1}{x_{min}} (\frac{x}{x_{min}})^{- \alpha}
+$$
+
+where
+
+$$
+x_{min} > 0 \;, \; \alpha > 0
+$$
+
+The distribution of the log values, $y = \log(x)$, is then given by an exponential distribution
+
+$$
+f(y) = \lambda e^{-\lambda(y - \log(x_{min}))}
+$$
+
+where
+
+$$
+\lambda = \alpha - 1
+$$
+
+However, due to the sensitivity limitations of satellities discussed in the introduction, we experience a detectability problem that causes the power-law distribution to turn over at the left end. For the total energy of a flare, we would expect that the power-law distribution is followed even at low flare energy levels, but we have a significant amount of flares missing at the left end because they were not detected. See *Figure 5* for a visualization of this problem.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "Visualization of the Detectability Problem", fig.height = 8, fig.width = 8}
+include_graphics("C:/Users/Josh/Downloads/detect_example.png")
+```
+
+The detectable flares still follow a power-law, but this is only within a bounded region of the observed distribution. In order to estimate this power-law without selecting an arbitrary starting point, we propose the Maximum Product of Spacings method to determine the bounded region and power-law within.
+
+## Maximum Product of Spacings
+
+As opposed to utilizing the Maximum Likelihood Estimation (MLE) method and "eyeballing" the point at which the power-law starts for the detectable flares, we use the Maximum Product of Spacings (MPS) method because it allows us to simulatenously estimate the left end, right end, and the exponent $\alpha$ of the power-law (see *Figure 6*). As opposed to the MLE, which uses the likelihood function, MPS maximizes the product of the differences between the cumulative distribution evaluated at the order statistics[^1]. Simply stated, MPS is given by the following
+
+$$
+max \Pi_{i=0}^n F(x_{(i+1)}) - F(x_{(i)})
+$$
+
+[^1]: Note that the MPS algorithm fits to the exponential form of the power-law, so it returns the parameter $\lambda$, where $\alpha = \lambda + 1$.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "Bounded Region Where Observed Power-Law Occurs", fig.height = 8, fig.width = 8}
+include_graphics("C:/Users/Josh/Downloads/fit_example.png")
+```
+
+Before implementing the MPS algorithm on our solar flare data, we tested its robustness on 15 combinations of simulated model parameters and a range of sample sizes. *Figure 7* shows the performance of the algorithm through a boxplot of the difference between the fitted and true $\lambda$ as the sample size increases. We observe that as the sample size increases, the fitted values approach the true values of $\alpha$. *Figure 8* gives the runtime of the algorithm as the sample size increases, increasing as $N^2$. 
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "Fits Approach True Value as Sample Size Increases", fig.height = 8, fig.width = 8}
+include_graphics("C:/Users/Josh/Downloads/fitted_alpha_sim.png")
+```
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "Runtime Increases as $N^2$", fig.height = 8, fig.width = 8}
+include_graphics("C:/Users/Josh/Downloads/runtime_sim.png")
+```
+
+\pagebreak
+
+## Monte Carlo Simulations
+
+In addition to the value given by the MPS algorithm after fitting to our original data, we report error bars with the estimate to give a range of uncertainty by using Monte Carlo simulations. We first take a bootstrap sample from our original sample. The size of the sample is determined by a Poisson random variables with the mean equal to the observed sample size. This allows for variation in our estimates that could be caused by differing sample sizes. Next, we add randomly distributed noise, with a standard deviation of 10%, to each sampled value in the bootstrap sample to account for systematic uncertainties. After this, we fit the power-law distribution using the MPS algorithm. This process is repeated 100 times to obtain a bootstrap sampling distribution. We then take the mode of the sampling distribution as the point estimate for our parameters and report the error bars as the 68% highest density interval.
+
+# Distribution of Flare Energies
+
+After fitting the power-law distribution to our data using the MPS algorithm and obtaining error bars from the Monte Carlo simulations, we received the estimates for the aggregate, by-cycle, and by-year subsamples for total energy, peak flux, and duration. These results can be found in the following sections.
+
+## Total Energy
+
+### Aggregate and By-Cycle
+
+The estimated $\alpha$ for the aggregate total energy data is similar to previous estimates, but the by-cycle estimates suggest that they may differ by a significant amount.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "Aggregate Total Energy Distribution", out.width = "100%"}
+include_graphics("C:/Users/Josh/Downloads/total_energy_agg.png")
+```
+
+```{r, echo = FALSE}
+# defining variables, units
+variables <- c("Cycle", "Alpha", "Mode of ln(x)", "ln(Left End)", "ln(Right End)", "Aggregate", 1.794005, 63.22, 63.47, 68.07, 23, 1.767075, 63.22, 63.47, 67.81, 24, 2.068505, 63.20, 65.51, 68.78)
+Cycle <- c("Aggregate", 23, 24)
+Alpha <- c(1.794005, 1.767075, 2.068505)
+Mode <- c(63.22, 63.22, 2.068505)
+left <- c(63.47, 63.47,  63.20)
+right <- c(68.07, 67.81, 68.78)
+results_table <- data.frame(Cycle, Alpha, Mode, left, right)
+colnames(results_table) <- c("Cycle", "Alpha", "Mode of ln(x)", "ln(Left End)", "ln(Right End)")
+kable(results_table, caption = "Aggregate and By-Cycle Total Energy Fitted Values")
+```
+
+\pagebreak
+
+### By-Year
+
+We observe a possible trend appearing within each cycle for the fitted $\alpha$ values. The power-law seems to steepen as the solar maximum is approached and flattens as it gets closer to the solar minimum[^2].
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "By-Year Total Energy Fitted Alpha", out.width = "100%"}
+include_graphics("C:/Users/Josh/Downloads/total_energy_year.png")
+```
+
+[^2]: Note that the horizontal colored lines represent the $\alpha$ estimates for the by-cycle values and the horizontal blue line represents the end of cycle 23 and the start of cycle 24.
+
+## Peak Flux
+
+### Aggregate and By-Cycle
+
+The fitted $\alpha$ values are consistent across solar cycles and the power-law region is found to contain C-class and M-class flares within our observed data. This could suggest that the probability that C and M-class flares are detectable is near 1 since the fitted region follows a power-law according to MPS. 
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "Aggregate Peak Flux Distribution", out.width = "100%"}
+include_graphics("C:/Users/Josh/Downloads/peak_flux_agg.png")
+```
+
+```{r, echo = FALSE}
+# defining variables, units
+variables <- c("Cycle", "Alpha", "Mode of ln(x)", "ln(Left End)", "ln(Right End)", "Aggregate", 1.794005, 63.22, 63.47, 68.07, 23, 1.767075, 63.22, 63.47, 67.81, 24, 2.068505, 63.20, 65.51, 68.78)
+Cycle <- c("Aggregate", 23, 24)
+Alpha <- c(2.055357, 2.08328, 2.038141)
+Mode <- c(-6.91, -6.91, -6.93)
+left <- c(-6.27, -6.21, -4.61)
+right <- c(-2.12, -2.32, -2.38)
+results_table <- data.frame(Cycle, Alpha, Mode, left, right)
+colnames(results_table) <- c("Cycle", "Alpha", "Mode of ln(x)", "ln(Left End)", "ln(Right End)")
+kable(results_table, caption = "Aggregate and By-Cycle Peak Flux Fitted Values")
+```
+
+\pagebreak
+
+### By-Year
+
+Unlike Aschwanden et al. 2012, we do not observe an obvious trend in $\alpha$ by year throughout the two cycles for peak flux.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "By-Year Peak Flux Fitted Alpha", out.width = "100%"}
+include_graphics("C:/Users/Josh/Downloads/peak_flux_year.png")
+```
+
+## Duration
+
+### Aggregate
+
+The power-law for duration is substantial and does not go out of our expectations.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "Aggregate Duration Distribution", out.width = "100%"}
+include_graphics("C:/Users/Josh/Downloads/duration_agg.png")
+```
+
+```{r, echo = FALSE}
+# defining variables, units
+variables <- c("Cycle", "Alpha", "Mode of ln(x)", "ln(Left End)", "ln(Right End)", "Aggregate", 1.794005, 63.22, 63.47, 68.07, 23, 1.767075, 63.22, 63.47, 67.81, 24, 2.068505, 63.20, 65.51, 68.78)
+Cycle <- c("Aggregate")
+Alpha <- c(2.180884)
+Mode <- c(6.043652)
+left <- c(6.582649)
+right <- c(8.719979)
+results_table <- data.frame(Cycle, Alpha, Mode, left, right)
+colnames(results_table) <- c("Cycle", "Alpha", "Mode of ln(x)", "ln(Left End)", "ln(Right End)")
+kable(results_table, caption = "Aggregate Duration Fitted Values")
+```
+
+\pagebreak
+
+### By-Year
+
+The results for $\alpha$ by year suggests that duration varies by considerable amounts throughout each year, although the error bars are rather wide in some instances.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE, fig.cap = "By-Year Duration Fitted Alpha", out.width = "100%"}
+include_graphics("C:/Users/Josh/Downloads/duration_year.png")
+```
+
+# Distribution of Flare Counts
+
+After obtaining the results from all the power-law fits of the solar flare properties, we began to investigate the goodness of fit of the Poisson distribution that was used to model the number of solar flares in our Monte Carlo Simulations. It was important that we understand how to model the number of flares that occur each year given the importance of the solar cycle and the effects of variation in sample size on our fits given by the Maximum Product of Spacings algorithm. 
+
+The number of flares occuring is clearly temporal, specifically being dependent on the phase of the solar cycle (see *Figure 1*). Because of this, we cannot draw from a fitted distribution to the aggregegate count data. Instead, it would be more appropriate to subset the data by some unit of time, such as by year, and model the counts for each subset.
+
+When we subset our data by year and take the *rate of counts per 30 days*, we get the sample statistics for each year as seen in *Table 6*.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.height = 8, fig.width = 8}
+kable(GOES_thirty %>% group_by(year) %>% summarize(count = sum(n), mean = round(mean(n),1), var = round(var(n),2), sd = round(sd(n),2)), caption = "Flare Counts per 30 Days")
+```
+
+This table illustrates that it is not appropriate to fit a distribution to the aggregate data, no matter the "rate" for flare counts, because there is so much variation in the total counts by year as a result of the temporal dependency. If we fit a distribution for each year, we need to select a rate for our counts. For example, the number of flares that occur "per 30 days" or "per 7 days" in a specified year.
+
+A prevalent issue that can be observed in the table is the discrepancy between the mean and the variance for each year. This cautions us in our selection what distribution to use to model our counts, which was initially the Poisson distribution.
+
+The graph below shows the trend in flare counts for each year by binning the counts by month. For years like 2004 and 2008, there is no noticeable issues with the count data, but in most other years we observe the counts changing throughout the individual year. The high variance is a result of these changing counts within each year, especially in cases with extreme outliers. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, fig.cap="Trend in Flare Counts by Year", fig.height = 8, fig.width = 10}
+ggplot(data = ungroup(GOES_month), aes(x = as.numeric(month), y = n)) + 
+  geom_point() + 
+  geom_smooth(se = FALSE) + 
+  facet_wrap(vars(year)) + 
+  labs(title = "Trend in Flare Counts by Year", x = "Numeric Month", y = "Count") +
+  theme_bw(15)
+```
+
+We could potentially address this in several ways, one of which is changing our unit of time for which we model the flares. Rather than fit a distribution for each year (which is arbitrary in terms of the sun), we could segment by the phase of the solar cycle. If this segmentation is done properly, the trend may be "washed out." We compare the Poisson distribution and the Negative Binomial distribution for the 30-day rate in the following sections.
+
+## Poisson Distribution
+
+For a discrete random variable that follows a Poisson distribution, the distribution takes on the functional form
+
+$$
+P(X=k|\lambda) = \frac{\lambda^ke^{-\lambda}}{k!}
+$$
+
+This distribution models the number of times an event occurs within some interval of time. The Maximum Likelihood estimate is simply given by the mean
+
+$$
+\hat{\lambda} = \frac{1}{n}\sum_{i=1}^n k_i
+$$
+
+Thus the $E[X] = \lambda$, which is also the variance: $V[X] = \lambda$. This property of the Poisson distribution should be considered, especially since the variance is much larger than the mean of flare counts for each year (see *Table 6*).
+
+
+
+## Negative Binomial Distribution
+
+Given that we are observing a sample variance much greater than our mean, the Poisson should be used with caution. Instead, we can fit a Negative Binomial distribution to our by-year data. This distribution has two parameters, the mean and the dispersion parameter, allowing for greater variance. We use Negative Binomial Distribution Family Function `negbinomial()` from the VGAM package in R to obtain our estimates.
+
+The Negative Binomial distribution takes on the form
+
+$$
+P(X=k|\mu,s) = {{k+s-1}\choose{k}} (\frac{\mu}{\mu+s})^k (\frac{s}{\mu+s})^s
+$$
+
+Where $\mu$ is the mean and $s$ is an index parameter. The dispersion parameter is given by $\frac{1}{s}$. We can derive the variance from $\mu$ and $s$, where
+
+$$
+V[X] = \mu + \frac{\mu^2}{s}
+$$
+
+## Results
+
+# Conclusion
+
+By utilizing the Maximum Product of Spacings method, the fits of the exponents and bounds of the power-law regions were found simultaneously and were statistically demonstrated to follow power-laws. We confirm that the exponent for the total energy power-law is similar to previous estimates and does not exhibit a detectable trend over the past two cycles. However, we do not find a noticeable trend in the estimated exponents throughout the solar cycles for peak flux. This outcome is different than what was found by Aschwanden et al. 2012.
+
+We also found that at any given time, the observed flare counts are overdispersed by more than twice the expected amount under the Poisson distributional assumptions. We proposed a negative binomial distribution to take into account the variability in counts and found that it is a much more appropriate fit. We plan to continue analysis on the distribution of flare counts, as this is vital to obtaining our error bars. Moving forward, we plan to fit the power-law distribution using MPS to all active regions and orders within a sequence of flares. Additionally, it will be important to finalize the analysis of the flare counts distribution and to continue to test the MPS algorithm. Once our results are finalized, we will then utilize the RHESSI satellite database to compare our results to the GOES data. 
+
+\pagebreak
+
+# References
