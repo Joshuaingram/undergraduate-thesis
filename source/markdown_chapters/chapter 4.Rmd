@@ -1,0 +1,125 @@
+---
+title: "Chapter 4 - Power-Laws"
+author: "Joshua Ingram"
+date: "5/12/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(wesanderson)
+library(car)
+library(VGAM)
+library(qqplotr)
+library(lubridate)
+library(zoo)
+library(goftest)
+library(latex2exp)
+library(padr)
+library(poweRlaw)
+source('D:/main/Projects/Solar-Flare-Project/R/exp_sim_ks_stat.R')
+
+GOES <- read_csv("D:/main/Datasets/Solar_REU/GOES_data/goes_clean.csv")
+GOES$cycle <- as.factor(GOES$cycle)
+```
+
+# 4.1 An Introduction to Power-Laws
+
+theoretical data drawn from power law with alpha = 1.8 (normal scale)
+```{r}
+set.seed(50)
+sim_plaw <- rplcon(1000, 10, 5.8)
+sim_plaw <- data.frame(value = sim_plaw)
+theoretical <- dplcon(sim_plaw, xmin = 10, alpha = 5.8)
+sim_plaw["theoretical"] <- theoretical
+
+ggplot(data = sim_plaw, aes(x = value, y = ..density..)) +
+  geom_histogram(fill = "aquamarine4", color = "black", boundary = 10) + 
+  theme_bw() + 
+  labs(x = TeX("x"), y = TeX("$f_X(x) = dP/dx$")) +
+  geom_line(aes(x=value, y=theoretical), size = 1.2)
+```
+
+theoretical data drawn from power law with alpha = 1.8 (where Y =log_10(x))
+```{r}
+set.seed(50)
+sim_plaw <- rplcon(1000, 10, 5.8)
+sim_plaw_log <- log(sim_plaw, 10)
+sim_plaw_log <- data.frame(value = sim_plaw_log)
+theoretical <- dplcon(sim_plaw, xmin = 10, alpha = 5.8)
+sim_plaw_log["theoretical"] <- theoretical
+
+ggplot(data = sim_plaw_log, aes(x = value, y = ..density..)) +
+  geom_histogram(fill = "aquamarine4", color = "black", boundary = 1) + 
+  theme_bw() + 
+  labs(x = TeX("log_{10}(x)"), y = TeX("$f_Y(log_{10}(x)) = dP/dlog_{10}(x)$")) +
+  geom_line(aes(x=value, y=theoretical * 26), size = 1.2)
+```
+
+# 4.2 Distribution of Flare Properties
+
+distribution of total energy (aggregate) in 3 scales
+```{r}
+ggplot(data = GOES, aes(x = Gflrtotalenergy)) +
+  geom_histogram(fill = "sienna2", color = "black") + 
+  theme_bw() + 
+  labs(x = TeX("Total Energy (ergs)"), y = TeX("Count"))
+
+ggplot(data = GOES, aes(x = log(Gflrtotalenergy, 10))) +
+  geom_histogram(fill = "sienna2", color = "black") + 
+  theme_bw() + 
+  labs(x = TeX("log_{10}(Total Energy)"), y = TeX("Count"))
+
+ggplot(data = GOES, aes(x = log(Gflrtotalenergy, 10))) +
+  geom_histogram(fill = "sienna2", color = "black") + 
+  theme_bw() + 
+  labs(x = TeX("log_{10}(Total Energy)"), y = TeX("Count")) +
+  scale_y_log10()
+```
+
+distribution of peak flux (aggregate) in 3 scales
+```{r}
+ggplot(data = GOES, aes(x = Gflxpeak)) +
+  geom_histogram(fill = "sienna2", color = "black") + 
+  theme_bw() + 
+  labs(x = TeX("Peak Flux (ergs/s/cm^2)"), y = TeX("Count"))
+
+ggplot(data = GOES, aes(x = log(Gflxpeak, 10))) +
+  geom_histogram(fill = "sienna2", color = "black") + 
+  theme_bw() + 
+  labs(x = TeX("log_{10}(Peak Flux)"), y = TeX("Count"))
+
+ggplot(data = GOES, aes(x = log(Gflxpeak, 10))) +
+  geom_histogram(fill = "sienna2", color = "black") + 
+  theme_bw() + 
+  labs(x = TeX("log_{10}(Peak Flux)"), y = TeX("Count")) +
+  scale_y_log10()
+```
+
+distribution of waiting time... tails only powerlaws according to aschwanden beacuse of nonstationary poisson process
+```{r}
+GOES_waiting_time <- GOES %>% filter(interarrival_time < 350)
+
+ggplot(data = GOES_waiting_time, aes(x = interarrival_time)) +
+  geom_histogram(fill = "sienna2", color = "black") + 
+  theme_bw() + 
+  labs(x = TeX("Waiting Time (hours)"), y = TeX("Count"))
+
+ggplot(data = GOES_waiting_time, aes(x = log(interarrival_time, 10))) +
+  geom_histogram(fill = "sienna2", color = "black") + 
+  theme_bw() + 
+  labs(x = TeX("log_{10}(Waiting Time)"), y = TeX("Count"))
+
+ggplot(data = GOES_waiting_time, aes(x = log(interarrival_time, 10))) +
+  geom_histogram(fill = "sienna2", color = "black") + 
+  theme_bw() + 
+  labs(x = TeX("log_{10}(Waiting Time)"), y = TeX("Count")) +
+  scale_y_log10()
+```
+
+
+# 4.3 Self-Organized Criticality

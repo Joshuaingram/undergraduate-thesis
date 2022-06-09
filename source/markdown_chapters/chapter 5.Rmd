@@ -1,0 +1,230 @@
+---
+title: "Chapter 5 - Modeling Flare Property Distributions"
+author: "Joshua Ingram"
+date: "5/12/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Simulation creation based on ML Model
+library(poweRlaw)
+library(tidyverse)
+library(readr)
+library(pracma)
+library(latex2exp)
+library(HDInterval)
+source('D:/main/Projects/Solar-Flare-Project/Thesis Results/Code/mu_likelihood_functionsV2.R')
+
+sim_results <- read_csv("D:/main/Datasets/Solar_REU/thesis_simulations/results/bs_simulations_results.csv")
+
+GOES <- read_csv("D:/main/Datasets/Solar_REU/GOES_data/goes_clean.csv")
+GOES$cycle <- as.factor(GOES$cycle)
+GOES$class <- as.factor(GOES$class)
+```
+
+# 5.1 Satellite Limitations
+
+```{r}
+# theta is ordererd as xi, gamma, beta, alpha
+
+# probability function pi with parameters determined by theta and H_0
+pi <- function(x, theta, H_0){
+  ifelse(x <= H_0, 0, 
+         ifelse(x >= theta[1], 1, 
+                (theta[2]*((x - H_0)/(theta[1] - x))^theta[3])/ (1 + theta[2]*((x - H_0)/(theta[1] - x))^theta[3])))
+}
+
+# rmu function takes in theta parameters that returns simulated data of sample size "size" and bin count "bins"
+rmu <- function(theta, H_0, size, bins){
+  
+  
+  # randomly generating data from power-law distribution
+  sim_data <- rplcon(n = size, xmin = exp(H_0), alpha = theta[5] + 1)
+  sim_data <- log(sim_data)
+  
+  # probability of detecting data determined by pi
+  prob_detect <- pi(sim_data, theta, H_0)
+  # probs <- data.frame(prob_detect, 1-prob_detect)
+  # colnames(probs) <- c("prob_detected", "prob_undetected")
+  
+  
+  # returns 1 if detected, 0 if not
+  # detection <- apply(probs, 1, function(x) sample(x=c(1,0), size = 1, prob = x))
+  detection <- rbinom(n = size, size = 1, prob = prob_detect)
+  
+  # dataframe of values, probability of detection, and whether detected or not
+  sim_data <- data.frame(sim_data, prob_detect, 1-prob_detect, detection)
+  colnames(sim_data) <- c("value", "prob_detected", "prob_undetected", "detection")
+  
+  # rmu_data is a single column dataframe of the values that were detected
+  rmu_data <- sim_data %>% filter(detection == 1) %>% select(value)
+  # undetected_data is a single column dataframe of the values that were not detected
+  undetected_data <- sim_data %>% filter(detection == 0) %>% select(value)
+  
+  # binning data and finding counts (hence mu_i)
+  rmui_data <- ggplot(data = rmu_data, aes(x= value)) + geom_histogram(bins = bins)
+  rmui_data <- ggplot_build(rmui_data)$data[[1]]
+  rmui_data <- data.frame(count = rmui_data$count, lb = rmui_data$xmin, ub = rmui_data$xmax, mid = rmui_data$x)
+  
+  # returning a list of the different subsets of the simulated data. rmu_data and rmui_data are most useful for running simulations
+  simulations <- list(rmui_data, rmu_data, undetected_data, sim_data)
+  names(simulations) <- c("rmui", "rmu", "undetected", "raw_data")
+  
+  return(simulations)
+  
+}
+
+theta <- c(62.5, 2, 5, 65, 0.8)
+H_0 <- 58
+size <- 50000
+bins <- 50
+
+data_vis <- rmu(theta, H_0, size, bins)
+df_vis <- data_vis$raw_data
+df_vis$value <- log(exp(df_vis$val), 10)
+df_vis$detection <- as.factor(df_vis$detection)
+levels(df_vis$detection) <- c("undetected", "detected")
+
+ggplot(data = df_vis[which(df_vis$detection == "detected"),], aes(x = value)) + 
+  geom_histogram(bins = 50, color = "black", fill = "aquamarine4") +
+  theme_bw() + 
+  labs(x = TeX("log_{10}(Total Energy)"), y = "Count")
+
+ggplot(data = df_vis[which(df_vis$detection == "detected"),] %>% filter(value <= 28 & value > 27), aes(x = 10^value)) + 
+  geom_histogram(bins = 100, color = "black", fill = "aquamarine4") +
+  theme_bw() + 
+  labs(x = TeX("log_{10}(Total Energy)"), y = "Count")
+
+ggplot(data = df_vis, aes(x = value, color = detection, fill = detection)) + 
+  geom_histogram(bins = 50, color = "black") +
+  theme_bw() + 
+  labs(x = TeX("log_{10}(Total Energy)"), y = "Count", fill = "Detection") +
+  scale_fill_manual(values = c("#FC8D62", "#66C2A5")) +
+  geom_vline(xintercept = log(exp(62.5), 10)) +
+  annotate("text", x = log(exp(62.5), 10)+1, y = 5000, label = "P(Detection) = 1") +
+  geom_segment(aes(x = log(exp(62.5), 10), y = 4500, xend = log(exp(62.5), 10)+3, yend = 4500),
+                  arrow = arrow(length = unit(0.5, "cm")), color = "black", lineend = "round", linejoin="round")
+
+```
+
+
+# 5.2 Theoretical Model
+
+## Sigmoid Model
+
+## ED50 Model
+
+# Maximum Likelihood Estimation
+
+# Simulations
+
+
+```{r}
+# getting all parameter values for simulations from file name 
+  nchr <- nchar(sim_results$id)
+  # sim id
+  id <- sim_results$id
+  # sample size
+  n <- as.numeric(substr(sim_results$id, 9, 11))
+  # number of bins
+  bins <- as.numeric(substr(sim_results$id, 15, 16))
+  # H min
+  H0 <- as.numeric(substr(sim_results$id, 18, 19))
+  # alpha
+  alpha <- as.numeric(substr(sim_results$id, 21, 23))
+  # kappa
+  kappa <- as.numeric(substr(sim_results$id, 25, 25))
+  # beta
+  beta <- as.numeric(substr(sim_results$id, 27, 29))
+  # gamma
+  gamma <- as.numeric(substr(sim_results$id, 31, 34))
+  # xi
+  xi <- as.numeric(substr(sim_results$id, 36, 37))
+  # index
+  index <- as.numeric(substr(sim_results$id, 39, nchr))
+  
+  sim_info <- data.frame(id, n, bins, H0, alpha, kappa, beta, gamma, xi, index, convergence = sim_results$convergence, runtime = sim_results$runtime, alpha_hat = sim_results$alpha_hat, kappa_hat = sim_results$kappa_hat, beta_hat = sim_results$beta_hat, gamma_hat = sim_results$gamma_hat, xi_hat = sim_results$xi_hat, alpha_se = sim_results$alpha_se, kappa_se = sim_results$kappa_se, beta_se = sim_results$beta_se, gamma_se = sim_results$gamma_se, xi_se = sim_results$xi_se, error = sim_results$error)
+  
+plot(sim_info$bins, sim_info$alpha_hat - sim_info$alpha)
+
+mean((sim_info$alpha_hat - sim_info$alpha)^2)
+mean((sim_info[n == 250,]$alpha_hat - sim_info[n == 250,]$alpha)^2)
+mean((sim_info[n == 500,]$alpha_hat - sim_info[n == 500,]$alpha)^2)
+mean((sim_info[bins == 30,]$alpha_hat - sim_info[bins == 30,]$alpha)^2)
+sqrt(mean((sim_info[bins == 50,]$alpha_hat - sim_info[bins == 50,]$alpha)^2))
+sqrt(mean((sim_info[bins == 75,]$alpha_hat - sim_info[bins == 75,]$alpha)^2))
+
+ggplot(data = sim_info, aes(x = bins, y = alpha_hat - alpha, color = as.factor(n))) +
+  geom_point() +
+  labs(title = TeX("Convergence of $\\hat{\\alpha}$ as Bin Count Increases"), y = TeX("$\\hat{\\alpha} - \\alpha$"), x = "Bin Count",color = "Sample Size") +
+  theme_bw() +
+  scale_color_brewer(palette = "Set2") +
+  stat_summary(
+    geom = "point",
+    fun = "mean",
+    col = "red",
+    size = 3
+  )
+
+sd_diff <- sd(sim_info$alpha_hat - sim_info$alpha, na.rm = TRUE)
+
+ggplot(data = sim_info, aes(x = n, y = alpha_hat - alpha)) +
+  geom_point() +
+  labs(title = TeX("Convergence of $\\hat{\\alpha}$ as Sample Size Increases"), subtitle = "8500 simulations for n = 250, 7500 for n = 500, and 927 for n = 900", y = TeX("$\\hat{\\alpha} - \\alpha$"), x = "Sample Size", color = "Bin Count") +
+  stat_summary(fun.data = mean_sdl, fun.args = list(mult = 1), geom = "errorbar", color = "red") +
+  theme_bw() +
+  scale_color_brewer(palette = "Set2") +
+  stat_summary(
+    geom = "point",
+    fun = "mean",
+    col = "red",
+    size = 3
+  )
+
+ggplot(data = sim_info, aes(x = bins, y = runtime, color = as.factor(n))) +
+  geom_point(color = "aquamarine4") +
+  labs(title = TeX("Runtime as Bin Count Increases"), y = TeX("Runtime (seconds)"), x = "Bin Count") +
+  theme_bw() +
+  scale_color_brewer(palette = "Set2") +
+  stat_summary(
+    geom = "point",
+    fun = "mean",
+    col = "red",
+    size = 3
+  )
+
+
+mean((sim_info[n == 250,]$alpha_hat - sim_info[n == 250,]$alpha)^2)
+nrow(sim_info[n == 250,])
+mean((sim_info[n == 500,]$alpha_hat - sim_info[n == 500,]$alpha)^2)
+nrow(sim_info[n == 500,])
+
+
+
+ggplot(data = GOES %>% mutate(class= recode(class, "c('A', 'B')='A-B'")), aes(x=year, fill = as.factor(cycle))) + 
+  geom_bar(color = "black") +
+  geom_vline(data = solar_extrema, mapping = aes(xintercept = decimal_date(dates), linetype = extrema), size = .85) +
+  facet_wrap(~class) +
+  scale_y_log10() +
+  labs(x = "Year", y = "Count", fill = "Cycle", linetype = "Extrema") +
+  theme_bw() +
+  scale_fill_brewer(palette = "Set2")
+
+ggplot(sim_data, aes(sample = sample)) + 
+  stat_pp_band(distribution = "exp") +
+  stat_pp_line(color = "sienna2") +
+  stat_pp_point(distribution = "exp",
+                color = "aquamarine4") +
+  theme_bw() +
+  labs(y = "Empirical Cumulative Probability", x = "Theoretical Cumulative Probability")
+
+
+```
+
+
+sqrt(MSE)
+convergence plots

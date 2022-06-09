@@ -1,0 +1,134 @@
+---
+title: "ar_flare_count_lifetimes"
+author: "Joshua D. Ingram"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(wesanderson)
+library(car)
+library(VGAM)
+library(qqplotr)
+library(lubridate)
+library(zoo)
+library(goftest)
+library(latex2exp)
+library(padr)
+source('D:/main/Projects/Solar-Flare-Project/R/exp_sim_ks_stat.R')
+
+GOES <- read_csv("D:/main/Datasets/Solar_REU/GOES_data/goes_clean.csv")
+GOES$cycle <- as.factor(GOES$cycle)
+GOES$class <- as.factor(GOES$class)
+```
+
+```{r}
+GOES_inters <- GOES %>% select(Garreg, year, Gpeak, Gstart, Gstop, Glat, Gflrtotalenergy, class) %>% group_by(Garreg) %>% arrange(Gstart) %>% mutate(waiting_time = as.numeric(difftime(Gstart, lag(Gstart), units = "hours"))) %>% drop_na() %>% filter(waiting_time > 0)
+
+GOES_inters <- GOES %>% select(Gevtnum, Garreg, year, Gstart, Gstop) %>% group_by(Garreg) %>% arrange(Gstart) %>% mutate(interarrival_time = as.numeric(difftime(Gstart, lag(Gstart), units = "hours"))) %>% drop_na() %>% filter(interarrival_time > 0)
+
+df.30 <- compData <- data.frame(ar_num = numeric(0), n = numeric(0), lambda = numeric(0), ks_exp_true = numeric(0), ks_stat = numeric(0), ks_pval = numeric(0), ad_exp_true = numeric(0), ad_stat = numeric(0), ad_pval = numeric(0))
+for (i in 1:length(unique(GOES_inters$Garreg))){
+  
+  ar.num <- unique(GOES_inters$Garreg)[i]
+  
+  ar_data <- GOES_inters %>% filter(Garreg == ar.num)
+  # ar_data$interarrival_time <- ar_data$interarrival_time + rnorm(1, 0, 0.0001)
+  n <- nrow(ar_data)
+  if (n >= 30){
+    
+    lambda <- 1/mean(ar_data$interarrival_time)
+    results <- gtest.sim(ar_data$interarrival_time, n = 200, boot = FALSE)
+    ks_stat <- ks.test(ar_data$interarrival_time, "pexp", rate = lambda)$statistic
+    ks_pval <- results[1]
+    ad_results <- ad.test(ar_data$interarrival_time, "pexp", rate = lambda)
+    ad_stat <- ad_results$statistic
+    ad_pval <- results[2]
+    
+    if (ks_pval < 0.05){
+      ks_exp_true <- FALSE
+    }else {
+      ks_exp_true <- TRUE
+    }
+    
+    if (ad_pval < 0.05){
+      ad_exp_true <- FALSE
+    }else {
+      ad_exp_true <- TRUE
+    }
+  
+    results <- c(ar.num, n, lambda, ks_exp_true, ks_stat, ks_pval, ad_exp_true, ad_stat, ad_pval)
+    df.30[nrow(df.30) + 1, ] <- results
+  }
+}
+
+df.30
+mean(df.30$ad_exp_true)
+mean(df.30$ks_exp_true)
+nrow(df.30)
+```
+
+```{r}
+# exponential
+df.30[which(df.30$ad_exp_true == 1 & df.30$n > 55),]
+
+# non-exponential
+df.30[which(df.30$ad_exp_true == 0 & df.30$n > 65),]
+```
+
+```{r}
+# exponential
+ar_1294_e <- GOES %>% filter(Garreg == 1294)
+ar_1488_e <- GOES %>% filter(Garreg == 1488)
+
+# non-exponential
+ar_1361_ne <- GOES %>% filter(Garreg == 1361)
+ar_1424_ne <- GOES %>% filter(Garreg == 1537)
+```
+
+```{r}
+ggplot(ar_1294_e, aes(x = Gstart)) + geom_histogram(color = "black", binwidth = 86400/4)
+ggplot(ar_1488_e, aes(x = Gstart)) + geom_histogram(color = "black", bins = 86400/4)
+
+ggplot(ar_1361_ne, aes(x = Gstart)) + geom_histogram(color = "black", bins = 86400/4)
+ggplot(ar_1424_ne, aes(x = Gstart)) + geom_histogram(color = "black", bins = 86400/4)
+```
+
+```{r}
+# exponential
+exp_ars <- df.30[which(df.30$ad_exp_true == 1 & df.30$n > 54),]$ar_num
+
+# non-exponential
+non_exp_ars <- df.30[which(df.30$ad_exp_true == 0 & df.30$n > 67),]$ar_num
+
+exp_ars_GOES <- GOES %>% filter(Garreg %in% exp_ars)
+
+non_exp_ars_GOES <- GOES %>% filter(Garreg %in% non_exp_ars)
+
+ggplot(exp_ars_GOES, aes(x = Gstart, fill = cycle)) + geom_histogram(color = "black", binwidth = 86400/3) + facet_wrap(vars(Garreg), scales = "free_x") + labs(x = "Date", y = "Count", title = "Flare Occurrences over lifetime of Active Regions (Exponential WTD)", subtitle = "Binwidth = 8 hours and includes active regions with > 50 flares")
+
+ggplot(non_exp_ars_GOES, aes(x = Gstart, fill = cycle)) + geom_histogram(color = "black", binwidth = 86400/3) + facet_wrap(vars(Garreg), scales = "free_x") + labs(x = "Date", y = "Count", title = "Flare Occurrences over lifetime of Active Regions (Non-Exponential WTD)", subtitle = "Binwidth = 8 hours and includes active regions with > 65 flares")
+```
+
+```{r}
+t <- 0:(3*15)
+
+counts <- c()
+counts <- c()        
+for (i in 1: length(t)){
+  
+  new_count <- rpois(1, lambda = 1.5)
+  new_count_ne <- rnbinom(1, 0.5, 2)
+  counts <- c(counts, new_count)
+  
+}
+
+sim_data <- data.frame(t, counts)
+ggplot(sim_data, aes(x = t, y = counts)) + geom_step(color = "black", bins = 46, size = 1.1) + labs(x = "Time", y = "Count")
+ggplot(sim_data, aes(x = t, y = counts)) + geom_step(color = "black", bins = 46, size = 1.1) + labs(x = "Time", y = "Count")
+```
+
